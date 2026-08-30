@@ -82,10 +82,10 @@ Call log:
             </div>
             <div>
               <h3 className="font-display" style={{ fontSize: '15px', fontWeight: 700, color: 'var(--cream)' }}>
-                ANALYZE ANY CUSTOM TEST WITH GPT-5.6-LUNA
+                ANALYZE ANY CUSTOM TEST WITH LIVE AI FORENSICS
               </h3>
               <p className="font-pixel" style={{ fontSize: '10px', color: 'var(--phosphor-green)' }}>
-                PASTE ARBITRARY CODE // ZERO MOCKS // LIVE REASONING
+                PASTE ARBITRARY CODE // MULTI-PROVIDER LLM // LIVE REASONING
               </p>
             </div>
           </div>
@@ -208,7 +208,7 @@ Call log:
               style={{ fontSize: '11px', borderColor: 'var(--phosphor-green)', background: 'var(--phosphor-green)', color: '#141518' }}
             >
               <span className="btn-cursor" style={{ color: '#141518' }}>⚡</span>
-              <span>Run Live gpt-5.6-luna Forensics</span>
+              <span>Run Live AI Forensics</span>
             </button>
           </div>
         </form>

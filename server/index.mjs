@@ -5,7 +5,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { runBisectStressLoop, runSingleIteration } from './runner.mjs';
 import { applyQuarantineLicense } from './quarantine.mjs';
-import { runAIForensics } from './ai.mjs';
+import { runAIForensics, testAIProviderConnection } from './ai.mjs';
 import { createGitHubIssue, createGitHubPullRequest, verifyGitHubConnection } from './github.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -26,7 +26,11 @@ const SCENARIO_FIXTURES = {
 
 // System & Integration Status
 app.get('/api/system/status', (req, res) => {
+  const provider = process.env.AI_PROVIDER || 'openai';
   const hasOpenAI = Boolean(process.env.OPENAI_API_KEY && process.env.OPENAI_API_KEY !== 'your_openai_api_key_here');
+  const hasAnthropic = Boolean(process.env.ANTHROPIC_API_KEY && process.env.ANTHROPIC_API_KEY !== 'your_anthropic_api_key_here');
+  const hasGemini = Boolean(process.env.GEMINI_API_KEY && process.env.GEMINI_API_KEY !== 'your_gemini_api_key_here');
+  const hasOllama = Boolean(process.env.OLLAMA_BASE_URL || provider === 'ollama');
   const hasGitHub = Boolean(process.env.GITHUB_TOKEN && process.env.GITHUB_TOKEN !== 'your_github_token_here');
 
   res.json({
@@ -34,10 +38,29 @@ app.get('/api/system/status', (req, res) => {
     harness: 'TrueForge v0.9',
     mode: 'production-ready',
     integrations: {
+      ai: {
+        provider,
+        active: hasOpenAI || hasAnthropic || hasGemini || hasOllama,
+        model: process.env.OPENAI_MODEL || process.env.ANTHROPIC_MODEL || process.env.GEMINI_MODEL || 'gpt-5.6-luna',
+        baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
+      },
       openai: {
         active: hasOpenAI,
         model: process.env.OPENAI_MODEL || 'gpt-5.6-luna',
         baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1'
+      },
+      anthropic: {
+        active: hasAnthropic,
+        model: process.env.ANTHROPIC_MODEL || 'claude-3-7-sonnet'
+      },
+      gemini: {
+        active: hasGemini,
+        model: process.env.GEMINI_MODEL || 'gemini-2.0-flash'
+      },
+      ollama: {
+        active: hasOllama,
+        baseUrl: process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1',
+        model: process.env.OLLAMA_MODEL || 'deepseek-r1'
       },
       github: {
         active: hasGitHub,
@@ -55,6 +78,13 @@ app.post('/api/github/verify', async (req, res) => {
   res.json(result);
 });
 
+// Test AI Provider Connection
+app.post('/api/ai/test-provider', async (req, res) => {
+  const { provider, apiKey, model, baseUrl } = req.body;
+  const result = await testAIProviderConnection({ provider, apiKey, model, baseUrl });
+  res.json(result);
+});
+
 // Health Check
 app.get('/api/health', (req, res) => {
   res.json({
@@ -66,9 +96,7 @@ app.get('/api/health', (req, res) => {
 });
 
 /**
- * Live OpenAI Forensics Endpoint
- * Accepts test code and execution failure logs, calls OpenAI API,
- * and streams back the real-time diagnosis, culprit line, and patch diff.
+ * Live Multi-Provider AI Forensics Endpoint
  */
 app.post('/api/ai/forensics', async (req, res) => {
   const { 
@@ -79,8 +107,10 @@ app.post('/api/ai/forensics', async (req, res) => {
     reproRate, 
     jitterMs, 
     cpuThrottle,
-    openaiApiKey,
-    openaiModel 
+    provider,
+    apiKey,
+    model,
+    baseUrl
   } = req.body;
 
   if (!testCode) {
@@ -96,16 +126,20 @@ app.post('/api/ai/forensics', async (req, res) => {
       reproRate: reproRate || 22.0,
       jitterMs: jitterMs || 150,
       cpuThrottle: cpuThrottle || 1.2,
-      apiKey: openaiApiKey,
-      model: openaiModel
+      provider: provider || 'openai',
+      apiKey,
+      model,
+      baseUrl
     });
 
     res.json({
-      success: true,
-      forensics: forensicsResult,
+      success: forensicsResult.success ?? true,
+      forensics: forensicsResult.forensics,
       isLiveAI: forensicsResult.isLiveAI,
-      model: forensicsResult.modelUsed,
-      tokensUsed: forensicsResult.tokensUsed
+      provider: forensicsResult.provider || provider,
+      model: forensicsResult.model,
+      tokensUsed: forensicsResult.tokensUsed || 0,
+      error: forensicsResult.error
     });
   } catch (err) {
     console.error('[00-FLAKE API] AI Forensics error:', err);
@@ -159,8 +193,6 @@ app.get('/api/bisect/stream', async (req, res) => {
 
 /**
  * Production Quarantine & Approval Endpoint
- * Authorizes the action, cryptographically signs the license,
- * patches local disk fixtures, and triggers real GitHub Issue + PR creation if configured.
  */
 app.post('/api/quarantine', async (req, res) => {
   const {

@@ -12,7 +12,7 @@ import { ApprovalGateModal } from './ApprovalGateModal';
 import { QodoEvidenceModal } from './QodoEvidenceModal';
 import { QuarantineVault } from './QuarantineVault';
 import { CustomTestModal } from './CustomTestModal';
-import { ConnectRepoModal } from './ConnectRepoModal';
+import { ConnectRepoModal, AIProviderConfig, AIProviderType } from './ConnectRepoModal';
 
 interface MissionControlProps {
   onBackToLanding: () => void;
@@ -46,27 +46,33 @@ export const MissionControl: React.FC<MissionControlProps> = ({
   const [isCustomModalOpen, setIsCustomModalOpen] = useState<boolean>(false);
   const [isConnectRepoModalOpen, setIsConnectRepoModalOpen] = useState<boolean>(false);
 
-  // Live System & Integration Status
-  const [systemIntegrations, setSystemIntegrations] = useState<{
-    openai: { active: boolean; model: string; baseUrl: string };
-    github: { active: boolean; repo: string };
-  }>({
-    openai: { active: false, model: 'gpt-5.6-luna', baseUrl: 'https://api.openai.com/v1' },
-    github: { active: false, repo: 'sandman-sh/00-Flake' }
-  });
-
   // Dynamic connected repository config
   const [connectedRepoConfig, setConnectedRepoConfig] = useState<{
     repo: string;
     branch: string;
     githubToken: string;
-    openaiKey: string;
   }>(() => ({
     repo: 'sandman-sh/00-Flake',
     branch: 'main',
-    githubToken: localStorage.getItem('00_FLAKE_GH_TOKEN') || '',
-    openaiKey: localStorage.getItem('00_FLAKE_OPENAI_KEY') || ''
+    githubToken: localStorage.getItem('00_FLAKE_GH_TOKEN') || ''
   }));
+
+  // Dynamic Multi-Provider AI config
+  const [aiConfig, setAiConfig] = useState<AIProviderConfig>(() => ({
+    provider: 'openai' as AIProviderType,
+    apiKey: localStorage.getItem('00_FLAKE_OPENAI_KEY') || '',
+    model: 'gpt-5.6-luna',
+    baseUrl: 'https://api.openai.com/v1'
+  }));
+
+  // Live System & Integration Status
+  const [systemIntegrations, setSystemIntegrations] = useState<{
+    ai: { provider: string; active: boolean; model: string; baseUrl: string };
+    github: { active: boolean; repo: string };
+  }>({
+    ai: { provider: 'openai', active: false, model: 'gpt-5.6-luna', baseUrl: 'https://api.openai.com/v1' },
+    github: { active: false, repo: 'sandman-sh/00-Flake' }
+  });
 
   // Live AI Forensics State
   const [isAiAnalyzing, setIsAiAnalyzing] = useState<boolean>(false);
@@ -78,6 +84,7 @@ export const MissionControl: React.FC<MissionControlProps> = ({
     explanation: string;
     quarantinedCode?: string;
     isLiveAI: boolean;
+    provider: string;
     modelUsed: string;
     tokensUsed?: number;
   }>({
@@ -88,6 +95,7 @@ export const MissionControl: React.FC<MissionControlProps> = ({
     explanation: scenario.explanation,
     quarantinedCode: scenario.quarantinedCode,
     isLiveAI: false,
+    provider: 'openai',
     modelUsed: 'heuristic-engine'
   });
 
@@ -97,7 +105,10 @@ export const MissionControl: React.FC<MissionControlProps> = ({
       .then(res => res.json())
       .then(data => {
         if (data.integrations) {
-          setSystemIntegrations(data.integrations);
+          setSystemIntegrations({
+            ai: data.integrations.ai || { provider: 'openai', active: data.integrations.openai?.active, model: 'gpt-5.6-luna', baseUrl: 'https://api.openai.com/v1' },
+            github: data.integrations.github || { active: false, repo: 'sandman-sh/00-Flake' }
+          });
           if (data.integrations.github && data.integrations.github.repo) {
             setConnectedRepoConfig(prev => ({
               ...prev,
@@ -119,6 +130,7 @@ export const MissionControl: React.FC<MissionControlProps> = ({
       explanation: scenario.explanation,
       quarantinedCode: scenario.quarantinedCode,
       isLiveAI: false,
+      provider: aiConfig.provider,
       modelUsed: 'heuristic-engine'
     });
   }, [scenario]);
@@ -140,7 +152,10 @@ export const MissionControl: React.FC<MissionControlProps> = ({
           reproRate: reproducedRate,
           jitterMs: stressConfig.networkJitterMs,
           cpuThrottle: stressConfig.cpuThrottleMultiplier,
-          openaiApiKey: connectedRepoConfig.openaiKey
+          provider: aiConfig.provider,
+          apiKey: aiConfig.apiKey,
+          model: aiConfig.model,
+          baseUrl: aiConfig.baseUrl
         })
       });
 
@@ -155,7 +170,8 @@ export const MissionControl: React.FC<MissionControlProps> = ({
             explanation: data.forensics.explanation || scenario.explanation,
             quarantinedCode: data.forensics.quarantinedCode || scenario.quarantinedCode,
             isLiveAI: data.isLiveAI ?? false,
-            modelUsed: data.model || 'OpenAI gpt-5.6-luna',
+            provider: data.provider || aiConfig.provider,
+            modelUsed: data.model || aiConfig.model,
             tokensUsed: data.tokensUsed
           });
         }
@@ -206,10 +222,10 @@ export const MissionControl: React.FC<MissionControlProps> = ({
       ciDuration: '2m 14s',
       errorSnippet: custom.errorSnippet,
       rootCauseType: 'Race Condition (DOM)',
-      rootCauseSummary: 'Analyzing with gpt-5.6-luna...',
+      rootCauseSummary: `Analyzing with ${aiConfig.model}...`,
       culpritLineNumber: 1,
       culpritCode: custom.testCode.split('\n')[0] || '',
-      explanation: 'Invoking gpt-5.6-luna for deep AST forensics...',
+      explanation: `Invoking ${aiConfig.provider.toUpperCase()} (${aiConfig.model}) for deep AST forensics...`,
       originalCode: custom.testCode,
       quarantinedCode: custom.testCode,
       sandboxCommands: [
@@ -239,18 +255,27 @@ export const MissionControl: React.FC<MissionControlProps> = ({
     repo: string;
     branch: string;
     githubToken: string;
-    openaiKey: string;
+    aiConfig: AIProviderConfig;
   }) => {
-    setConnectedRepoConfig(config);
+    setConnectedRepoConfig({
+      repo: config.repo,
+      branch: config.branch,
+      githubToken: config.githubToken
+    });
+
+    setAiConfig(config.aiConfig);
+
     setSystemIntegrations(prev => ({
       ...prev,
       github: {
         active: Boolean(config.repo),
         repo: config.repo
       },
-      openai: {
-        ...prev.openai,
-        active: Boolean(config.openaiKey || prev.openai.active)
+      ai: {
+        provider: config.aiConfig.provider,
+        active: Boolean(config.aiConfig.apiKey || config.aiConfig.provider === 'ollama'),
+        model: config.aiConfig.model,
+        baseUrl: config.aiConfig.baseUrl
       }
     }));
 
@@ -347,18 +372,18 @@ export const MissionControl: React.FC<MissionControlProps> = ({
           </div>
 
           <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-            {systemIntegrations.openai.active ? (
-              <span className="tactical-badge badge-phosphor" style={{ fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <Bot size={11} />
-                <span>OPENAI LIVE: {systemIntegrations.openai.model}</span>
-              </span>
-            ) : (
-              <span className="tactical-badge badge-amber" style={{ fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px' }}>
-                <Bot size={11} />
-                <span>OPENAI: CONFIGURE .ENV</span>
-              </span>
-            )}
+            {/* Multi-Provider AI Badge */}
+            <button
+              onClick={() => setIsConnectRepoModalOpen(true)}
+              className={`tactical-badge ${systemIntegrations.ai.active ? 'badge-phosphor' : 'badge-amber'}`}
+              style={{ fontSize: '10px', display: 'flex', alignItems: 'center', gap: '4px', cursor: 'pointer' }}
+              title="Click to configure or switch AI Provider"
+            >
+              <Bot size={11} />
+              <span>AI: {aiConfig.provider.toUpperCase()} ({aiConfig.model}) ⚙️</span>
+            </button>
 
+            {/* Target Repo Badge */}
             <button
               onClick={() => setIsConnectRepoModalOpen(true)}
               className="tactical-badge badge-phosphor"
@@ -378,8 +403,8 @@ export const MissionControl: React.FC<MissionControlProps> = ({
             className="btn-straitly-secondary"
             style={{ padding: '6px 14px 6px 20px', fontSize: '11px', borderColor: 'var(--terracotta-bright)' }}
           >
-            <span className="btn-cursor" style={{ left: '8px', color: 'var(--terracotta-bright)' }}>🔗</span>
-            <span style={{ color: 'var(--terracotta-bright)' }}>Connect Real Repo</span>
+            <span className="btn-cursor" style={{ left: '8px', color: 'var(--terracotta-bright)' }}>⚙️</span>
+            <span style={{ color: 'var(--terracotta-bright)' }}>Harness & AI Settings</span>
           </button>
 
           <button
@@ -555,7 +580,7 @@ export const MissionControl: React.FC<MissionControlProps> = ({
               <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                 <Bot size={16} color="var(--phosphor-green)" />
                 <span className="font-pixel text-cream" style={{ fontSize: '12px' }}>
-                  SUBAGENT FORENSICS // {aiForensics.modelUsed}
+                  FORENSICS // {aiForensics.provider.toUpperCase()} ({aiForensics.modelUsed})
                 </span>
               </div>
               <button
@@ -566,7 +591,7 @@ export const MissionControl: React.FC<MissionControlProps> = ({
               >
                 <span className="btn-cursor" style={{ left: '6px', color: 'var(--phosphor-green)' }}>⚡</span>
                 <span style={{ color: 'var(--phosphor-green)' }}>
-                  {isAiAnalyzing ? 'Analyzing...' : 'Re-Run Live AI Forensics'}
+                  {isAiAnalyzing ? 'Analyzing...' : 'Re-Run AI Forensics'}
                 </span>
               </button>
             </div>
@@ -663,6 +688,7 @@ export const MissionControl: React.FC<MissionControlProps> = ({
         onClose={() => setIsConnectRepoModalOpen(false)}
         currentRepo={connectedRepoConfig.repo}
         currentBranch={connectedRepoConfig.branch}
+        currentAIConfig={aiConfig}
         onSaveConnection={handleSaveConnection}
       />
 

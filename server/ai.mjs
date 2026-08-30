@@ -1,13 +1,23 @@
 import 'dotenv/config';
 
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.6-luna';
-const OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+// Global defaults from .env
+const DEFAULT_PROVIDER = process.env.AI_PROVIDER || 'openai';
+const DEFAULT_OPENAI_KEY = process.env.OPENAI_API_KEY;
+const DEFAULT_OPENAI_MODEL = process.env.OPENAI_MODEL || 'gpt-5.6-luna';
+const DEFAULT_OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1';
+
+const DEFAULT_ANTHROPIC_KEY = process.env.ANTHROPIC_API_KEY;
+const DEFAULT_ANTHROPIC_MODEL = process.env.ANTHROPIC_MODEL || 'claude-3-7-sonnet-20250219';
+
+const DEFAULT_GEMINI_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
+const DEFAULT_GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+
+const DEFAULT_OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || 'http://localhost:11434/v1';
+const DEFAULT_OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'deepseek-r1';
 
 /**
- * Executes live AI Forensics using OpenAI API.
- * Ingests the failing test code, runtime error logs, and execution parameters,
- * and performs deep AST & asynchronous race condition analysis.
+ * Multi-Provider AI Forensics Runner
+ * Supports: OpenAI, Anthropic Claude, Google Gemini, Ollama (Local), Groq/DeepSeek/Custom OpenAI-Compatible
  */
 export async function runAIForensics({
   testCode,
@@ -16,13 +26,15 @@ export async function runAIForensics({
   errorLogs = '',
   reproRate = 22.0,
   jitterMs = 150,
-  cpuThrottle = 1.2
+  cpuThrottle = 1.2,
+  provider = DEFAULT_PROVIDER,
+  apiKey,
+  model,
+  baseUrl
 }) {
-  if (!OPENAI_API_KEY || OPENAI_API_KEY === 'your_openai_api_key_here') {
-    console.warn('[00-FLAKE AI] No OPENAI_API_KEY detected in .env. Using intelligent deterministic heuristic fallback.');
-    return generateFallbackForensics({ testCode, testName, framework, errorLogs, reproRate });
-  }
-
+  const activeProvider = (provider || DEFAULT_PROVIDER).toLowerCase();
+  
+  // Build system & user prompts
   const systemPrompt = `You are 00-Flake, an autonomous CI/CD Agent Forensics Engine running on the TrueForge Agent Harness.
 Your mission is to perform root-cause analysis on intermittent, flaky test failures (race conditions, timing desyncs, unhandled promise rejections, unhydrated DOM locators).
 
@@ -36,7 +48,7 @@ You MUST respond strictly with valid, parseable JSON matching this schema:
   "culpritCode": "string (exact code snippet at the culprit line)",
   "explanation": "string (detailed engineering explanation of the bug)",
   "quarantinedCode": "string (the full updated test file source code with the test skipped and TrueForge quarantine header injected)",
-  "aiModelUsed": "${OPENAI_MODEL}",
+  "aiModelUsed": "string",
   "qodoAudit": {
     "score": number (0 to 100),
     "highSeverityCount": number (typically 0 for safe quarantine patches),
@@ -67,74 +79,262 @@ ${testCode}
 Analyze this failure and return the structured JSON forensics report.`;
 
   try {
-    const requestBody = {
-      model: OPENAI_MODEL,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: userPrompt }
-      ],
-      response_format: { type: 'json_object' }
-    };
+    let rawContent = '';
+    let usedModel = '';
+    let tokensUsed = 0;
 
-    let response = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${OPENAI_API_KEY}`
-      },
-      body: JSON.stringify(requestBody)
-    });
-
-    // If response_format json_object is rejected by a custom model, retry without it
-    if (!response.ok && response.status === 400) {
-      const errText = await response.text();
-      if (errText.includes('response_format')) {
-        delete requestBody.response_format;
-        response = await fetch(`${OPENAI_BASE_URL}/chat/completions`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${OPENAI_API_KEY}`
-          },
-          body: JSON.stringify(requestBody)
-        });
-      } else {
-        throw new Error(`OpenAI API error (${response.status}): ${errText}`);
+    // 1. ANTHROPIC CLAUDE PROVIDER
+    if (activeProvider === 'anthropic' || activeProvider === 'claude') {
+      const activeKey = apiKey || DEFAULT_ANTHROPIC_KEY;
+      if (!activeKey || activeKey === 'your_anthropic_api_key_here') {
+        throw new Error('Anthropic API key is not configured.');
       }
-    } else if (!response.ok) {
-      const errText = await response.text();
-      throw new Error(`OpenAI API error (${response.status}): ${errText}`);
+      usedModel = model || DEFAULT_ANTHROPIC_MODEL || 'claude-3-7-sonnet-20250219';
+
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': activeKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: usedModel,
+          max_tokens: 2048,
+          system: systemPrompt,
+          messages: [{ role: 'user', content: userPrompt }]
+        })
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Anthropic API error (${res.status}): ${errText}`);
+      }
+
+      const data = await res.json();
+      rawContent = data.content?.[0]?.text || '';
+      tokensUsed = (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0);
+
+    // 2. GOOGLE GEMINI PROVIDER
+    } else if (activeProvider === 'gemini' || activeProvider === 'google') {
+      const activeKey = apiKey || DEFAULT_GEMINI_KEY;
+      if (!activeKey || activeKey === 'your_gemini_api_key_here') {
+        throw new Error('Google Gemini API key is not configured.');
+      }
+      usedModel = model || DEFAULT_GEMINI_MODEL || 'gemini-2.0-flash';
+
+      const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${usedModel}:generateContent?key=${activeKey}`;
+      const res = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          systemInstruction: { parts: [{ text: systemPrompt }] },
+          contents: [{ parts: [{ text: userPrompt }] }],
+          generationConfig: {
+            responseMimeType: 'application/json'
+          }
+        })
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Gemini API error (${res.status}): ${errText}`);
+      }
+
+      const data = await res.json();
+      rawContent = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
+      tokensUsed = data.usageMetadata?.totalTokenCount || 0;
+
+    // 3. OLLAMA / LOCAL LLM PROVIDER
+    } else if (activeProvider === 'ollama' || activeProvider === 'local') {
+      const activeBaseUrl = baseUrl || DEFAULT_OLLAMA_BASE_URL;
+      usedModel = model || DEFAULT_OLLAMA_MODEL || 'deepseek-r1';
+
+      const res = await fetch(`${activeBaseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: usedModel,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt }
+          ]
+        })
+      });
+
+      if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`Ollama Local API error (${res.status}): ${errText}. Ensure Ollama is running on ${activeBaseUrl}.`);
+      }
+
+      const data = await res.json();
+      rawContent = data.choices?.[0]?.message?.content || '';
+      tokensUsed = data.usage?.total_tokens || 0;
+
+    // 4. OPENAI & CUSTOM OPENAI-COMPATIBLE (Groq, DeepSeek, Together, etc.)
+    } else {
+      const activeKey = apiKey || DEFAULT_OPENAI_KEY;
+      const activeBaseUrl = baseUrl || DEFAULT_OPENAI_BASE_URL;
+      usedModel = model || DEFAULT_OPENAI_MODEL || 'gpt-5.6-luna';
+
+      if (!activeKey || activeKey === 'your_openai_api_key_here') {
+        throw new Error('OpenAI / Custom Gateway API key is not configured.');
+      }
+
+      const requestBody = {
+        model: usedModel,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt }
+        ],
+        response_format: { type: 'json_object' }
+      };
+
+      let res = await fetch(`${activeBaseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${activeKey}`
+        },
+        body: JSON.stringify(requestBody)
+      });
+
+      if (!res.ok && res.status === 400) {
+        const errText = await res.text();
+        if (errText.includes('response_format') || errText.includes('temperature')) {
+          delete requestBody.response_format;
+          res = await fetch(`${activeBaseUrl}/chat/completions`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${activeKey}`
+            },
+            body: JSON.stringify(requestBody)
+          });
+        } else {
+          throw new Error(`AI API error (${res.status}): ${errText}`);
+        }
+      } else if (!res.ok) {
+        const errText = await res.text();
+        throw new Error(`AI API error (${res.status}): ${errText}`);
+      }
+
+      const data = await res.json();
+      rawContent = data.choices?.[0]?.message?.content || '';
+      tokensUsed = data.usage?.total_tokens || 0;
     }
 
-    const data = await response.json();
-    const rawContent = data.choices?.[0]?.message?.content || '';
-    
-    // Extract JSON cleanly even if wrapped in markdown codeblocks
-    const cleanJson = rawContent.replace(/^```json\s*/i, '').replace(/\s*```$/, '').trim();
+    // Clean and parse JSON response
+    const cleanJson = rawContent
+      .replace(/^```json\s*/i, '')
+      .replace(/^```\s*/i, '')
+      .replace(/\s*```$/, '')
+      .trim();
+
     const parsed = JSON.parse(cleanJson);
+    parsed.aiModelUsed = usedModel;
 
     return {
       success: true,
       isLiveAI: true,
-      model: OPENAI_MODEL,
-      tokensUsed: data.usage?.total_tokens || 0,
+      provider: activeProvider,
+      model: usedModel,
+      tokensUsed,
       forensics: parsed
     };
   } catch (err) {
-    console.error('[00-FLAKE AI] Error calling OpenAI API:', err.message);
+    console.error(`[00-FLAKE AI] Provider [${activeProvider}] Error:`, err.message);
     const fallback = generateFallbackForensics({ testCode, testName, framework, errorLogs, reproRate });
     return {
       success: false,
       isLiveAI: false,
       error: err.message,
-      model: `${OPENAI_MODEL} (Fallback applied)`,
+      provider: activeProvider,
+      model: `${model || 'ai-engine'} (Fallback applied)`,
       forensics: fallback
     };
   }
 }
 
 /**
- * Intelligent deterministic heuristic fallback in case OpenAI API key is not yet configured.
+ * Tests an AI Provider connection with a fast lightweight ping.
+ */
+export async function testAIProviderConnection({ provider = 'openai', apiKey, model, baseUrl }) {
+  const activeProvider = provider.toLowerCase();
+
+  try {
+    if (activeProvider === 'anthropic' || activeProvider === 'claude') {
+      const activeKey = apiKey || DEFAULT_ANTHROPIC_KEY;
+      if (!activeKey) return { valid: false, error: 'Missing Anthropic API key' };
+      const res = await fetch('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'x-api-key': activeKey,
+          'anthropic-version': '2023-06-01',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          model: model || 'claude-3-5-haiku-20241022',
+          max_tokens: 10,
+          messages: [{ role: 'user', content: 'Ping' }]
+        })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return { valid: true, provider: 'Anthropic Claude', model: model || 'claude-3-5-haiku' };
+
+    } else if (activeProvider === 'gemini' || activeProvider === 'google') {
+      const activeKey = apiKey || DEFAULT_GEMINI_KEY;
+      if (!activeKey) return { valid: false, error: 'Missing Google Gemini API key' };
+      const activeModel = model || 'gemini-2.0-flash';
+      const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${activeModel}:generateContent?key=${activeKey}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ contents: [{ parts: [{ text: 'Ping' }] }] })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return { valid: true, provider: 'Google Gemini', model: activeModel };
+
+    } else if (activeProvider === 'ollama' || activeProvider === 'local') {
+      const activeBaseUrl = baseUrl || DEFAULT_OLLAMA_BASE_URL;
+      const activeModel = model || 'deepseek-r1';
+      const res = await fetch(`${activeBaseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          model: activeModel,
+          messages: [{ role: 'user', content: 'Ping' }]
+        })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return { valid: true, provider: 'Ollama Local LLM', model: activeModel, baseUrl: activeBaseUrl };
+
+    } else {
+      const activeKey = apiKey || DEFAULT_OPENAI_KEY;
+      const activeBaseUrl = baseUrl || DEFAULT_OPENAI_BASE_URL;
+      const activeModel = model || DEFAULT_OPENAI_MODEL || 'gpt-5.6-luna';
+
+      if (!activeKey) return { valid: false, error: 'Missing OpenAI / Gateway API key' };
+      const res = await fetch(`${activeBaseUrl}/chat/completions`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${activeKey}`
+        },
+        body: JSON.stringify({
+          model: activeModel,
+          messages: [{ role: 'user', content: 'Ping' }]
+        })
+      });
+      if (!res.ok) throw new Error(await res.text());
+      return { valid: true, provider: 'OpenAI / Custom Gateway', model: activeModel, baseUrl: activeBaseUrl };
+    }
+  } catch (err) {
+    return { valid: false, error: err.message };
+  }
+}
+
+/**
+ * Intelligent deterministic heuristic fallback in case AI API key is not yet configured.
  */
 function generateFallbackForensics({ testCode, testName, framework, errorLogs, reproRate }) {
   const lines = testCode.split('\n');
@@ -143,7 +343,6 @@ function generateFallbackForensics({ testCode, testName, framework, errorLogs, r
   let rootCauseType = 'Race Condition (Timing)';
   let rootCauseSummary = 'Asynchronous timing mismatch between client execution and backend state under network latency.';
 
-  // Scan lines for common race condition triggers
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
     if (line.includes('page.click') || line.includes('locator.click') || line.includes('cy.get') || line.includes('button')) {
@@ -167,7 +366,6 @@ function generateFallbackForensics({ testCode, testName, framework, errorLogs, r
     }
   }
 
-  // Generate quarantined code
   let quarantinedCode = testCode;
   if (framework === 'playwright' || testCode.includes('test(')) {
     quarantinedCode = testCode.replace(
